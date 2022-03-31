@@ -1,153 +1,156 @@
 import * as d3 from "d3";
-import data from "../data/simple-flare.json";
+import flare from "../data/simple-flare.json";
 
-function pack() {
-  var _chart = {};
+// Copyright 2021 Observable, Inc.
+// Released under the ISC license.
+// https://observablehq.com/@d3/pack
+function Pack(
+  data,
+  {
+    // data is either tabular (array of objects) or hierarchy (nested objects)
+    path, // as an alternative to id and parentId, returns an array identifier, imputing internal nodes
+    id = Array.isArray(data) ? (d) => d.id : null, // if tabular data, given a d in data, returns a unique identifier (string)
+    parentId = Array.isArray(data) ? (d) => d.parentId : null, // if tabular data, given a node d, returns its parent’s identifier
+    children, // if hierarchical data, given a d in data, returns its children
+    value, // given a node d, returns a quantitative value (for area encoding; null for count)
+    sort = (a, b) => d3.descending(a.value, b.value), // how to sort nodes prior to layout
+    label, // given a leaf node d, returns the display name
+    title, // given a node d, returns its hover text
+    link, // given a node d, its link (if any)
+    linkTarget = "_blank", // the target attribute for links, if any
+    width = 640, // outer width, in pixels
+    height = 400, // outer height, in pixels
+    margin = 1, // shorthand for margins
+    marginTop = margin, // top margin, in pixels
+    marginRight = margin, // right margin, in pixels
+    marginBottom = margin, // bottom margin, in pixels
+    marginLeft = margin, // left margin, in pixels
+    padding = 3, // separation between circles
+    fill = "#ddd", // fill for leaf circles
+    fillOpacity, // fill opacity for leaf circles
+    stroke = "#bbb", // stroke for internal circles
+    strokeWidth, // stroke width for internal circles
+    strokeOpacity, // stroke opacity for internal circles
+  } = {}
+) {
+  // If id and parentId options are specified, or the path option, use d3.stratify
+  // to convert tabular data to a hierarchy; otherwise we assume that the data is
+  // specified as an object {children} with nested objects (a.k.a. the “flare.json”
+  // format), and use d3.hierarchy.
+  const root =
+    path != null
+      ? d3.stratify().path(path)(data)
+      : id != null || parentId != null
+      ? d3.stratify().id(id).parentId(parentId)(data)
+      : d3.hierarchy(data, children);
 
-  var _width = 1280,
-    _height = 800,
-    _svg,
-    _r = 720,
-    // _x = d3.scale.linear().range([0, _r]),
-    // _y = d3.scale.linear().range([0, _r]),
-    // _x = d3.scaleLinear([0, _r]),
-    // _y = d3.scaleLinear([0, _r]),
-    _nodes,
-    _bodyG;
+  // Compute the values of internal nodes by aggregating from the leaves.
+  value == null ? root.count() : root.sum((d) => Math.max(0, value(d)));
 
-  _chart.render = function () {
-    if (!_svg) {
-      _svg = d3
-        .select("body")
-        .append("svg")
-        .attr("height", _height)
-        .attr("width", _width);
-    }
+  // Compute labels and titles.
+  const descendants = root.descendants();
+  const leaves = descendants.filter((d) => !d.children);
+  leaves.forEach((d, i) => (d.index = i));
+  const L = label == null ? null : leaves.map((d) => label(d.data, d));
+  const T = title == null ? null : descendants.map((d) => title(d.data, d));
 
-    renderBody(_svg);
-  };
+  // Sort the leaves (typically by descending value for a pleasing layout).
+  if (sort != null) root.sort(sort);
 
-  function renderBody(svg) {
-    if (!_bodyG) {
-      _bodyG = svg
-        .append("g")
-        .attr("class", "body")
-        .attr("transform", function (d) {
-          return (
-            "translate(" + (_width - _r) / 2 + "," + (_height - _r) / 2 + ")"
-          );
-        });
-    }
+  // Compute the layout.
+  d3
+    .pack()
+    .size([width - marginLeft - marginRight, height - marginTop - marginBottom])
+    .padding(padding)(root);
 
-    var pack = d3.pack().size([_r, _r]);
-    // .value(function (d) {
-    //   return d.size;
-    // });
+  const svg = d3
+    .create("svg")
+    .attr("viewBox", [-marginLeft, -marginTop, width, height])
+    .attr("width", width)
+    .attr("height", height)
+    .attr("style", "max-width: 100%; height: auto; height: intrinsic;")
+    .attr("font-family", "sans-serif")
+    .attr("font-size", 10)
+    .attr("text-anchor", "middle");
 
-    var nodes = pack.nodes(_nodes);
+  const node = svg
+    .selectAll("g")
+    .data(descendants)
+    .join("g")
+    // .attr("xlink:href", link == null ? null : (d, i) => link(d.data, d))
+    // .attr("target", link == null ? null : linkTarget)
+    .attr("transform", (d) => `translate(${d.x},${d.y})`);
 
-    renderCircles(nodes);
+  node
+    .append("circle")
+    .attr("fill", (d) => (d.children ? "#fff" : fill))
+    .attr("fill-opacity", (d) => (d.children ? null : fillOpacity))
+    .attr("stroke", (d) => (d.children ? stroke : null))
+    .attr("stroke-width", (d) => (d.children ? strokeWidth : null))
+    .attr("stroke-opacity", (d) => (d.children ? strokeOpacity : null))
+    .attr("r", (d) => d.r);
 
-    renderLabels(nodes);
+  if (T) node.append("title").text((d, i) => T[i]);
+
+  if (L) {
+    // A unique identifier for clip paths (to avoid conflicts).
+    const uid = `O-${Math.random().toString(16).slice(2)}`;
+
+    const leaf = node.filter(
+      (d) => !d.children && d.r > 10 && L[d.index] != null
+    );
+
+    leaf
+      .append("clipPath")
+      .attr("id", (d) => `${uid}-clip-${d.index}`)
+      .append("circle")
+      .attr("r", (d) => d.r);
+
+    leaf
+      .append("text")
+      .attr(
+        "clip-path",
+        (d) => `url(${new URL(`#${uid}-clip-${d.index}`, location)})`
+      )
+      .selectAll("tspan")
+      .data((d) => `${L[d.index]}`.split(/\n/g))
+      .join("tspan")
+      .attr("x", 0)
+      .attr("y", (d, i, D) => `${i - D.length / 2 + 0.85}em`)
+      .attr("fill-opacity", (d, i, D) => (i === D.length - 1 ? 0.7 : null))
+      .text((d) => d);
   }
 
-  function renderCircles(nodes) {
-    var circles = _bodyG.selectAll("circle").data(nodes);
-
-    circles.enter().append("svg:circle");
-
-    circles
-      .transition()
-      .attr("class", function (d) {
-        return d.children ? "parent" : "child";
-      })
-      .attr("cx", function (d) {
-        return d.x;
-      })
-      .attr("cy", function (d) {
-        return d.y;
-      })
-      .attr("r", function (d) {
-        return d.r;
-      });
-
-    circles.exit().transition().attr("r", 0).remove();
-  }
-
-  function renderLabels(nodes) {
-    var labels = _bodyG.selectAll("text").data(nodes);
-
-    labels
-      .enter()
-      .append("svg:text")
-      .attr("dy", ".35em")
-      .attr("text-anchor", "middle")
-      .style("opacity", 0);
-
-    labels
-      .transition()
-      .attr("class", function (d) {
-        return d.children ? "parent" : "child";
-      })
-      .attr("x", function (d) {
-        return d.x;
-      })
-      .attr("y", function (d) {
-        return d.y;
-      })
-      .text(function (d) {
-        return d.name;
-      })
-      .style("opacity", function (d) {
-        return d.r > 20 ? 1 : 0;
-      });
-
-    labels.exit().remove();
-  }
-
-  _chart.width = function (w) {
-    if (!arguments.length) return _width;
-    _width = w;
-    return _chart;
-  };
-
-  _chart.height = function (h) {
-    if (!arguments.length) return _height;
-    _height = h;
-    return _chart;
-  };
-
-  _chart.r = function (r) {
-    if (!arguments.length) return _r;
-    _r = r;
-    return _chart;
-  };
-
-  _chart.nodes = function (n) {
-    if (!arguments.length) return _nodes;
-    _nodes = n;
-    return _chart;
-  };
-
-  return _chart;
+  return svg.node();
 }
 
-var chart = pack();
+const chartEl = Pack(flare, {
+  value: (d) => d.size, // size of each node (file); null for internal nodes (folders)
+  label: (d, n) =>
+    [...d.name.split(/(?=[A-Z][a-z])/g), n.value.toLocaleString("en")].join(
+      "\n"
+    ),
+  title: (d, n) =>
+    `${n
+      .ancestors()
+      .reverse()
+      .map(({ data: d }) => d.name)
+      .join(".")}\n${n.value.toLocaleString("en")}`,
+  // link: (d, n) =>
+  //   n.children
+  //     ? `https://github.com/prefuse/Flare/tree/master/flare/src/${n
+  //         .ancestors()
+  //         .reverse()
+  //         .map((d) => d.data.name)
+  //         .join("/")}`
+  //     : `https://github.com/prefuse/Flare/blob/master/flare/src/${n
+  //         .ancestors()
+  //         .reverse()
+  //         .map((d) => d.data.name)
+  //         .join("/")}.as`,
+  // link: (d, n) => "#",
+  width: 1152,
+  height: 1152,
+});
 
-// function largeFlare() {
-//   d3.json("./data/flare.json", function (nodes) {
-//     chart.nodes(nodes).render();
-//   });
-// }
-
-// function simpleFlare() {
-//   d3.json("./data/simple-flare.json", function (nodes) {
-//     chart.nodes(nodes).render();
-//   });
-// }
-
-function simpleFlare() {
-  chart.nodes(data).render();
-}
-
-simpleFlare();
+document.getElementById("app").appendChild(chartEl);
